@@ -1,0 +1,66 @@
+# Configuración de Jenkins como código: se aplica cada vez que arranca el contenedor.
+# Los ${...} vienen de las variables de entorno (.env); el token de SonarQube
+# lo deja el servicio sonar-init en /var/ci-secrets.
+jenkins:
+  systemMessage: "CI/CD de mobofacil"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: ${JENKINS_ADMIN_PASSWORD}
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: sonar-token
+              description: Token de análisis de SonarQube
+              secret: ${readFile:/var/ci-secrets/sonar_token}
+          - usernamePassword:
+              scope: GLOBAL
+              id: git-cred
+              description: Acceso de lectura al repo de mobofacil
+              username: ${GIT_USERNAME}
+              password: ${GIT_TOKEN}
+
+unclassified:
+  location:
+    url: ${JENKINS_URL}
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: true
+    installations:
+      - name: sonarqube
+        serverUrl: http://sonarqube:9000
+        credentialsId: sonar-token
+
+# Un job multibranch: cada rama del repo con Jenkinsfile se vuelve un pipeline.
+# Revisa el repo cada minuto y construye las ramas con commits nuevos.
+jobs:
+  - script: >
+      multibranchPipelineJob('mobofacil') {
+        displayName('mobofacil')
+        branchSources {
+          git {
+            id('mobofacil-remote')
+            remote('${GIT_REPO_URL}')
+            credentialsId('git-cred')
+          }
+        }
+        orphanedItemStrategy {
+          discardOldItems {
+            numToKeep(5)
+          }
+        }
+        triggers {
+          periodicFolderTrigger {
+            interval('1m')
+          }
+        }
+      }

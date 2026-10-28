@@ -1,0 +1,10 @@
+workflow-aggregator
+workflow-multibranch
+pipeline-stage-view
+git
+configuration-as-code
+job-dsl
+plain-credentials
+sonar
+junit
+timestamper
