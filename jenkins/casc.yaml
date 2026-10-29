@@ -26,7 +26,7 @@ credentials:
           - usernamePassword:
               scope: GLOBAL
               id: git-cred
-              description: Acceso de lectura al repo de mobofacil
+              description: Acceso de lectura a los repos de GIT_REPOS
               username: ${GIT_USERNAME}
               password: ${GIT_TOKEN}
 
@@ -40,27 +40,31 @@ unclassified:
         serverUrl: http://sonarqube:9000
         credentialsId: sonar-token
 
-# Un job multibranch: cada rama del repo con Jenkinsfile se vuelve un pipeline.
-# Revisa el repo cada minuto y construye las ramas con commits nuevos.
+# Un job multibranch por cada repo de GIT_REPOS (separados por coma), nombrado como el repo:
+# cada rama con Jenkinsfile se vuelve un pipeline. Revisa los repos cada minuto
+# y construye las ramas con commits nuevos.
 jobs:
-  - script: >
-      multibranchPipelineJob('mobofacil') {
-        displayName('mobofacil')
-        branchSources {
-          git {
-            id('mobofacil-remote')
-            remote('${GIT_REPO_URL}')
-            credentialsId('git-cred')
+  - script: |
+      '${GIT_REPOS}'.split(',').collect { it.trim() }.findAll { it }.each { repoUrl ->
+        def name = repoUrl.tokenize('/').last().replaceFirst('\\.git$', '')
+        multibranchPipelineJob(name) {
+          displayName(name)
+          branchSources {
+            git {
+              id(name + '-remote')
+              remote(repoUrl)
+              credentialsId('git-cred')
+            }
           }
-        }
-        orphanedItemStrategy {
-          discardOldItems {
-            numToKeep(5)
+          orphanedItemStrategy {
+            discardOldItems {
+              numToKeep(5)
+            }
           }
-        }
-        triggers {
-          periodicFolderTrigger {
-            interval('1m')
+          triggers {
+            periodicFolderTrigger {
+              interval('1m')
+            }
           }
         }
       }

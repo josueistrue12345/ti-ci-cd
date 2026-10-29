@@ -6,12 +6,12 @@ Todo corre en Docker y se levanta solo con `docker compose`, pensado para un ser
  git push (repo remoto)
       │   Jenkins revisa el repo cada minuto
       ▼
- ┌──────────── Jenkins  http://<servidor>:8081 ─────────────────────┐
+ ┌──────────── Jenkins  http://<servidor>:18081 ────────────────────┐
  │ Preparar → Pruebas unitarias → SonarQube + Quality Gate →        │
  │ Construir imagen → ...                                           │
  └───────┬───────────────────────┬──────────────────────────────────┘
          ▼                       ▼
-  Docker del servidor     SonarQube :9000
+  Docker del servidor     SonarQube :19000
   (docker.sock)           (+ Postgres)
 ```
 
@@ -57,15 +57,18 @@ La primera vez tarda unos minutos: SonarQube arranca, `sonar-init` genera el tok
 después arranca Jenkins. Para seguirlo: `docker compose logs -f sonar-init jenkins`.
 
 - Jenkins: `JENKINS_URL` del `.env` → usuario `admin` / `JENKINS_ADMIN_PASSWORD`
-- SonarQube: `http://<servidor>:9000` → usuario `admin` / `SONAR_ADMIN_PASSWORD`
+- SonarQube: `http://<servidor>:19000` → usuario `admin` / `SONAR_ADMIN_PASSWORD`
 
 Si falla la descarga de plugins de Jenkins, vuelve a correr `docker compose up -d --build`:
 algunos mirrors de Jenkins no responden (el mirror usado está fijo en `jenkins/Dockerfile`).
 
 ## Cómo funciona el flujo
 
-- **Job multibranch**: Jenkins crea un pipeline por cada rama de `GIT_REPO_URL` que tenga
-  `Jenkinsfile`, usando `GIT_USERNAME` / `GIT_TOKEN` (un token con permiso de lectura basta).
+- **Un job multibranch por repo**: por cada repo de `GIT_REPOS` (separados por coma) Jenkins crea
+  un job con el nombre del repo, y dentro un pipeline por cada rama que tenga `Jenkinsfile`.
+  Usa `GIT_USERNAME` / `GIT_TOKEN` para todos (un token con permiso de lectura basta).
+- **Agregar un proyecto**: súmalo a `GIT_REPOS` y corre `docker compose up -d`. Su `Jenkinsfile`
+  debe usar un `sonar.projectKey` propio para que SonarQube no lo mezcle con otro proyecto.
 - **SonarQube + Quality Gate**: el scanner analiza el código y espera el veredicto.
   Si el Quality Gate falla, el pipeline se detiene.
 - **Despliegue**: este compose ya no depende de un cluster kind. Las etapas del `Jenkinsfile`
@@ -75,7 +78,7 @@ algunos mirrors de Jenkins no responden (el mirror usado está fijo en `jenkins/
 
 | Quiero... | Hago... |
 |---|---|
-| Disparar el pipeline | Haz push; o en Jenkins: `mobofacil` → *Scan Multibranch Pipeline Now* |
+| Disparar el pipeline | Haz push; o en Jenkins: el job del repo → *Scan Multibranch Pipeline Now* |
 | Ver por qué falló | Jenkins → el build → *Console Output* |
 | Apagar | `docker compose stop` |
 | Prenderlo otra vez | `docker compose up -d` |

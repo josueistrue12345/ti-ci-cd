@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 $ciDir = $PSScriptRoot
 $envFile = Join-Path $ciDir '.env'
-$sonarUrl = 'http://localhost:9000'
+$sonarUrl = 'http://localhost:19000'
 
 function New-Password {
   # Cumple la política de SonarQube: 12+ caracteres, mayúscula, minúscula, número y símbolo
@@ -81,7 +81,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Falló docker compose up de Jenkins' }
 
 Write-Host ''
 Write-Host 'Listo:'
-Write-Host "  Jenkins    http://localhost:8081   admin / $($vars['JENKINS_ADMIN_PASSWORD'])"
-Write-Host "  SonarQube  http://localhost:9000   admin / $pass"
+Write-Host "  Jenkins    http://localhost:18081  admin / $($vars['JENKINS_ADMIN_PASSWORD'])"
+Write-Host "  SonarQube  http://localhost:19000  admin / $pass"
 Write-Host '  App        http://localhost:8080'
 Write-Host '(Las contraseñas quedan en ci/.env)'

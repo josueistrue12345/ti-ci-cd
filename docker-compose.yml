@@ -36,7 +36,7 @@ services:
         hard: 131072
       nproc: 8192
     ports:
-      - "${SONAR_PORT:-9000}:9000"
+      - "${SONAR_PORT:-19000}:9000"
     volumes:
       - sonar-data:/opt/sonarqube/data
       - sonar-extensions:/opt/sonarqube/extensions
@@ -72,11 +72,11 @@ services:
       CASC_JENKINS_CONFIG: /usr/share/jenkins/ref/casc.yaml
       JENKINS_URL: ${JENKINS_URL:?Falta JENKINS_URL en .env}
       JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?Falta JENKINS_ADMIN_PASSWORD en .env}
-      GIT_REPO_URL: ${GIT_REPO_URL:?Falta GIT_REPO_URL en .env}
+      GIT_REPOS: ${GIT_REPOS:?Falta GIT_REPOS en .env}
       GIT_USERNAME: ${GIT_USERNAME:?Falta GIT_USERNAME en .env}
       GIT_TOKEN: ${GIT_TOKEN:?Falta GIT_TOKEN en .env}
     ports:
-      - "${JENKINS_PORT:-8081}:8080"
+      - "${JENKINS_PORT:-18081}:8080"
     volumes:
       - jenkins-home:/var/jenkins_home
       # Jenkins construye imágenes con el Docker del servidor
