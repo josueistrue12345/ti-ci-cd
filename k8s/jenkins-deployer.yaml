@@ -1,0 +1,54 @@
+# Acceso de Jenkins al cluster remoto: solo puede desplegar dentro del namespace mobofacil.
+# Lo aplica k8s/crear-kubeconfig.sh.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-deployer
+  namespace: mobofacil
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-deployer
+  namespace: mobofacil
+rules:
+  # Lo que crea `kubectl apply -k` con los manifiestos de k8s/app
+  - apiGroups: ["", "apps", "networking.k8s.io", "batch", "autoscaling"]
+    resources: [deployments, services, configmaps, ingresses, jobs, cronjobs, horizontalpodautoscalers, persistentvolumeclaims, serviceaccounts]
+    verbs: [get, list, watch, create, update, patch]
+  # rollout status / rollout undo
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  # El pipeline revisa que exista mobofacil-env; ningún otro Secret es legible
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [mobofacil-env]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-deployer
+  namespace: mobofacil
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-deployer
+    namespace: mobofacil
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-deployer
+---
+# Token sin caducidad para el ServiceAccount (Kubernetes lo llena solo)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins-deployer-token
+  namespace: mobofacil
+  annotations:
+    kubernetes.io/service-account.name: jenkins-deployer
+type: kubernetes.io/service-account-token

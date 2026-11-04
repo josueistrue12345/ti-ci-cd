@@ -36,7 +36,7 @@ services:
         hard: 131072
       nproc: 8192
     ports:
-      - "${SONAR_PORT:-19000}:9000"
+      - "${SONAR_PORT:-19090}:9000"
     volumes:
       - sonar-data:/opt/sonarqube/data
       - sonar-extensions:/opt/sonarqube/extensions
@@ -75,13 +75,17 @@ services:
       GIT_REPOS: ${GIT_REPOS:?Falta GIT_REPOS en .env}
       GIT_USERNAME: ${GIT_USERNAME:?Falta GIT_USERNAME en .env}
       GIT_TOKEN: ${GIT_TOKEN:?Falta GIT_TOKEN en .env}
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:?Falta REGISTRY_USERNAME en .env}
+      REGISTRY_TOKEN: ${REGISTRY_TOKEN:?Falta REGISTRY_TOKEN en .env}
     ports:
-      - "${JENKINS_PORT:-18081}:8080"
+      - "${JENKINS_PORT:-18090}:8080"
     volumes:
       - jenkins-home:/var/jenkins_home
       # Jenkins construye imágenes con el Docker del servidor
       - /var/run/docker.sock:/var/run/docker.sock
       - sonar-token:/var/ci-secrets:ro
+      # Acceso al cluster remoto; lo genera k8s/crear-kubeconfig.sh
+      - ./secrets/kubeconfig:/var/k8s/kubeconfig:ro
     restart: unless-stopped
 
 volumes:

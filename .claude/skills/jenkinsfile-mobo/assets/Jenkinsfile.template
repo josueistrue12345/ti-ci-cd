@@ -1,0 +1,146 @@
+// Pipeline de __APP__: pruebas -> SonarQube -> imagen -> Harbor -> Kubernetes (namespace __APP__).
+// Corre en el Jenkins de ci-cd (docker-compose); solo la rama __DEPLOY_BRANCH__ sube y despliega.
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+  }
+
+  environment {
+    APP = '__APP__'
+    NAMESPACE = '__APP__'
+    IMAGE = '__HARBOR__/__HARBOR_PROJECT__/__APP__'
+    // NodePort de k8s/service.yaml en cualquier worker
+    APP_URL = 'http://192.168.30.11:__NODE_PORT__'
+  }
+
+  stages {
+    stage('Preparar') {
+      steps {
+        script {
+          // Tag único por build: así Kubernetes sabe que la imagen cambió
+          env.TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+        }
+      }
+    }
+
+    stage('Pruebas') {
+      steps {
+        sh '''
+          __TEST_COMMAND__
+        '''
+      }
+      post {
+        always {
+          junit allowEmptyResults: true, testResults: '__JUNIT_GLOB__'
+        }
+      }
+    }
+
+    stage('SonarQube + Quality Gate') {
+      steps {
+        // qualitygate.wait: el scanner espera el veredicto y falla si el Quality Gate no pasa
+        withSonarQubeEnv('sonarqube') {
+          sh '''
+            docker run --rm --volumes-from jenkins --network container:jenkins -w "$WORKSPACE" -u 0 \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+              -e SCANNER_WORKDIR_PATH="$WORKSPACE/.scannerwork" \
+              sonarsource/sonar-scanner-cli \
+              -Dsonar.projectKey="$APP" -Dsonar.projectName="$APP" \
+              -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300 \
+              __SONAR_PARAMS__
+          '''
+        }
+      }
+    }
+
+    stage('Construir imagen') {
+      steps {
+        sh 'docker build -t "$IMAGE:$TAG" .'
+      }
+    }
+
+    stage('Subir a Harbor') {
+      when { branch '__DEPLOY_BRANCH__' }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'registry-cred', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          sh '''
+            echo "$REG_PASS" | docker login "${IMAGE%%/*}" -u "$REG_USER" --password-stdin
+            docker push "$IMAGE:$TAG"
+            docker logout "${IMAGE%%/*}"
+          '''
+        }
+      }
+    }
+
+    stage('Desplegar') {
+      when { branch '__DEPLOY_BRANCH__' }
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+          sh '''
+            kubectl -n "$NAMESPACE" get secret "$APP-env" > /dev/null 2>&1 || {
+              echo "Falta el Secret $APP-env en el namespace $NAMESPACE"; exit 1; }
+
+            # Overlay temporal: los manifiestos de k8s/ con la imagen de Harbor y el tag de este build
+            mkdir -p .deploy
+            cat > .deploy/kustomization.yaml <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: $NAMESPACE
+resources:
+  - ../k8s
+images:
+  - name: $APP
+    newName: $IMAGE
+    newTag: "$TAG"
+EOF
+            kubectl apply -k .deploy
+            kubectl -n "$NAMESPACE" rollout status deployment/"$APP" --timeout=180s
+          '''
+        }
+      }
+      post {
+        failure {
+          // Si la versión nueva no levanta, se regresa a la anterior
+          withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+            sh 'kubectl -n "$NAMESPACE" rollout undo deployment/"$APP" || true'
+          }
+        }
+      }
+    }
+
+    stage('Prueba de humo') {
+      when { branch '__DEPLOY_BRANCH__' }
+      steps {
+        // Reintenta unos segundos: el Service tarda un poco en mandar tráfico a los pods nuevos
+        sh '''
+          for i in 1 2 3 4 5 6; do
+            curl -fsS -o /dev/null -w "GET __HEALTH_PATH__ -> %{http_code}\\n" "$APP_URL__HEALTH_PATH__" && exit 0
+            sleep 5
+          done
+          exit 1
+        '''
+      }
+    }
+  }
+
+  post {
+    success {
+      script {
+        if (env.BRANCH_NAME == '__DEPLOY_BRANCH__') {
+          echo "Desplegado $IMAGE:$TAG en $APP_URL"
+        }
+      }
+    }
+    always {
+      // Los pasos corren como root: se regresa el workspace al usuario jenkins y se limpia la imagen local
+      sh '''
+        docker run --rm --volumes-from jenkins -u 0 alpine chown -R 1000:1000 "$WORKSPACE" || true
+        docker rmi "$IMAGE:$TAG" || true
+      '''
+    }
+  }
+}

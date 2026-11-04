@@ -1,0 +1,13 @@
+# NodePort fijo por proyecto: la app queda en http://192.168.30.11:__NODE_PORT__ (cualquier worker)
+apiVersion: v1
+kind: Service
+metadata:
+  name: __APP__
+spec:
+  type: NodePort
+  selector:
+    app: __APP__
+  ports:
+    - port: 80
+      targetPort: __CONTAINER_PORT__
+      nodePort: __NODE_PORT__

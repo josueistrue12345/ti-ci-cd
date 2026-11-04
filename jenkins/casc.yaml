@@ -29,6 +29,19 @@ credentials:
               description: Acceso de lectura a los repos de GIT_REPOS
               username: ${GIT_USERNAME}
               password: ${GIT_TOKEN}
+          - usernamePassword:
+              scope: GLOBAL
+              id: registry-cred
+              description: Push de imágenes al registry
+              username: ${REGISTRY_USERNAME}
+              password: ${REGISTRY_TOKEN}
+          # Lo genera k8s/crear-kubeconfig.sh: solo despliega en el namespace mobofacil
+          - file:
+              scope: GLOBAL
+              id: kubeconfig
+              description: Acceso al cluster de Kubernetes remoto
+              fileName: kubeconfig
+              secretBytes: ${readFileBase64:/var/k8s/kubeconfig}
 
 unclassified:
   location:

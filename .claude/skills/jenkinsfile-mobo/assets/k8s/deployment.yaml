@@ -1,0 +1,47 @@
+# La imagen se llama __APP__ a secas: el pipeline la cambia por la de Harbor con el tag del build.
+# El namespace lo pone el pipeline; no lo escribas aquí.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __APP__
+  labels:
+    app: __APP__
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: __APP__
+  template:
+    metadata:
+      labels:
+        app: __APP__
+    spec:
+      imagePullSecrets:
+        - name: harbor-cred
+      containers:
+        - name: __APP__
+          image: __APP__
+          ports:
+            - containerPort: __CONTAINER_PORT__
+          # Variables de la app (BD, llaves, etc.): Secret creado a mano en el cluster
+          envFrom:
+            - secretRef:
+                name: __APP__-env
+          readinessProbe:
+            httpGet:
+              path: __HEALTH_PATH__
+              port: __CONTAINER_PORT__
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: __HEALTH_PATH__
+              port: __CONTAINER_PORT__
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
