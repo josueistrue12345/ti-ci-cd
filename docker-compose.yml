@@ -75,8 +75,9 @@ services:
       GIT_REPOS: ${GIT_REPOS:?Falta GIT_REPOS en .env}
       GIT_USERNAME: ${GIT_USERNAME:?Falta GIT_USERNAME en .env}
       GIT_TOKEN: ${GIT_TOKEN:?Falta GIT_TOKEN en .env}
-      REGISTRY_USERNAME: ${REGISTRY_USERNAME:?Falta REGISTRY_USERNAME en .env}
-      REGISTRY_TOKEN: ${REGISTRY_TOKEN:?Falta REGISTRY_TOKEN en .env}
+      # Opcionales mientras no haya registry: sin ellas solo falla la etapa que sube la imagen
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
+      REGISTRY_TOKEN: ${REGISTRY_TOKEN:-}
     ports:
       - "${JENKINS_PORT:-18090}:8080"
     volumes:
