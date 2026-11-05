@@ -1,5 +1,6 @@
-// Pipeline de __APP__: pruebas -> SonarQube -> imagen -> Harbor -> Kubernetes (namespace __APP__).
-// Corre en el Jenkins de ci-cd (docker-compose); solo la rama __DEPLOY_BRANCH__ sube y despliega.
+// Pipeline de __APP__: pruebas -> SonarQube -> imagen -> registry -> Kubernetes (namespace __APP__).
+// Corre en el Jenkins de ci-cd (docker-compose). Subir y desplegar solo pasan en la rama __DEPLOY_BRANCH__
+// y cuando REGISTRY tiene valor; mientras esté vacío, el pipeline prueba, analiza y construye la imagen.
 pipeline {
   agent any
 
@@ -12,7 +13,8 @@ pipeline {
   environment {
     APP = '__APP__'
     NAMESPACE = '__APP__'
-    IMAGE = '__HARBOR__/__HARBOR_PROJECT__/__APP__'
+    // Registry de imágenes (p. ej. 'ghcr.io/mobo'). Vacío: no se sube ni se despliega
+    REGISTRY = ''
     // NodePort de k8s/service.yaml en cualquier worker
     APP_URL = 'http://192.168.30.11:__NODE_PORT__'
   }
@@ -59,32 +61,43 @@ pipeline {
 
     stage('Construir imagen') {
       steps {
-        sh 'docker build -t "$IMAGE:$TAG" .'
+        sh 'docker build -t "$APP:$TAG" .'
       }
     }
 
-    stage('Subir a Harbor') {
-      when { branch '__DEPLOY_BRANCH__' }
+    stage('Subir al registry') {
+      when {
+        allOf {
+          branch '__DEPLOY_BRANCH__'
+          expression { return env.REGISTRY ? true : false }
+        }
+      }
       steps {
         withCredentials([usernamePassword(credentialsId: 'registry-cred', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
           sh '''
-            echo "$REG_PASS" | docker login "${IMAGE%%/*}" -u "$REG_USER" --password-stdin
-            docker push "$IMAGE:$TAG"
-            docker logout "${IMAGE%%/*}"
+            docker tag "$APP:$TAG" "$REGISTRY/$APP:$TAG"
+            echo "$REG_PASS" | docker login "${REGISTRY%%/*}" -u "$REG_USER" --password-stdin
+            docker push "$REGISTRY/$APP:$TAG"
+            docker logout "${REGISTRY%%/*}"
           '''
         }
       }
     }
 
     stage('Desplegar') {
-      when { branch '__DEPLOY_BRANCH__' }
+      when {
+        allOf {
+          branch '__DEPLOY_BRANCH__'
+          expression { return env.REGISTRY ? true : false }
+        }
+      }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
           sh '''
             kubectl -n "$NAMESPACE" get secret "$APP-env" > /dev/null 2>&1 || {
               echo "Falta el Secret $APP-env en el namespace $NAMESPACE"; exit 1; }
 
-            # Overlay temporal: los manifiestos de k8s/ con la imagen de Harbor y el tag de este build
+            # Overlay temporal: los manifiestos de k8s/ con la imagen del registry y el tag de este build
             mkdir -p .deploy
             cat > .deploy/kustomization.yaml <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -94,7 +107,7 @@ resources:
   - ../k8s
 images:
   - name: $APP
-    newName: $IMAGE
+    newName: $REGISTRY/$APP
     newTag: "$TAG"
 EOF
             kubectl apply -k .deploy
@@ -113,7 +126,12 @@ EOF
     }
 
     stage('Prueba de humo') {
-      when { branch '__DEPLOY_BRANCH__' }
+      when {
+        allOf {
+          branch '__DEPLOY_BRANCH__'
+          expression { return env.REGISTRY ? true : false }
+        }
+      }
       steps {
         // Reintenta unos segundos: el Service tarda un poco en mandar tráfico a los pods nuevos
         sh '''
@@ -130,16 +148,17 @@ EOF
   post {
     success {
       script {
-        if (env.BRANCH_NAME == '__DEPLOY_BRANCH__') {
-          echo "Desplegado $IMAGE:$TAG en $APP_URL"
+        if (env.BRANCH_NAME == '__DEPLOY_BRANCH__' && env.REGISTRY) {
+          echo "Desplegado $REGISTRY/$APP:$TAG en $APP_URL"
         }
       }
     }
     always {
-      // Los pasos corren como root: se regresa el workspace al usuario jenkins y se limpia la imagen local
+      // Los pasos corren como root: se regresa el workspace al usuario jenkins y se limpian las imágenes locales
       sh '''
         docker run --rm --volumes-from jenkins -u 0 alpine chown -R 1000:1000 "$WORKSPACE" || true
-        docker rmi "$IMAGE:$TAG" || true
+        docker rmi "$APP:$TAG" || true
+        [ -z "$REGISTRY" ] || docker rmi "$REGISTRY/$APP:$TAG" || true
       '''
     }
   }

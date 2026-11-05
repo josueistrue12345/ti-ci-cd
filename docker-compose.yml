@@ -23,6 +23,11 @@ services:
   sonarqube:
     image: sonarqube:community
     container_name: sonarqube
+    # Elasticsearch se detiene si no resuelve su propio hostname; en algunos servidores
+    # Docker no lo registra solo, así que se fija y se apunta a localhost
+    hostname: sonarqube
+    extra_hosts:
+      - "sonarqube:127.0.0.1"
     depends_on:
       sonar-db:
         condition: service_healthy
@@ -78,6 +83,8 @@ services:
       # Opcionales mientras no haya registry: sin ellas solo falla la etapa que sube la imagen
       REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
       REGISTRY_TOKEN: ${REGISTRY_TOKEN:-}
+      # Usuario de los workers para la credencial nodes-ssh
+      NODES_SSH_USER: ${NODES_SSH_USER:-madmin}
     ports:
       - "${JENKINS_PORT:-18090}:8080"
     volumes:
@@ -87,6 +94,8 @@ services:
       - sonar-token:/var/ci-secrets:ro
       # Acceso al cluster remoto; lo genera k8s/crear-kubeconfig.sh
       - ./secrets/kubeconfig:/var/k8s/kubeconfig:ro
+      # Llave SSH a los workers (credencial nodes-ssh)
+      - ./secrets/nodes-ssh:/var/k8s/nodes-ssh:ro
     restart: unless-stopped
 
 volumes:

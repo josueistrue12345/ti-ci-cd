@@ -1,4 +1,4 @@
-# La imagen se llama __APP__ a secas: el pipeline la cambia por la de Harbor con el tag del build.
+# La imagen se llama __APP__ a secas: el pipeline la cambia por la del registry con el tag del build.
 # El namespace lo pone el pipeline; no lo escribas aquí.
 apiVersion: apps/v1
 kind: Deployment
@@ -16,8 +16,9 @@ spec:
       labels:
         app: __APP__
     spec:
+      # Para registry privado; si el Secret no existe, Kubernetes descarga sin credenciales
       imagePullSecrets:
-        - name: harbor-cred
+        - name: registry-cred
       containers:
         - name: __APP__
           image: __APP__

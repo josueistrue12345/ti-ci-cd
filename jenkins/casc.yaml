@@ -42,6 +42,16 @@ credentials:
               description: Acceso al cluster de Kubernetes remoto
               fileName: kubeconfig
               secretBytes: ${readFileBase64:/var/k8s/kubeconfig}
+          # Llave SSH hacia los workers (192.168.30.11-13) para copiar imágenes mientras no hay registry.
+          # Se genera con: ssh-keygen -t ed25519 -f ./secrets/nodes-ssh -N "" -C jenkins-ci
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: nodes-ssh
+              description: SSH de Jenkins a los workers de Kubernetes
+              username: ${NODES_SSH_USER}
+              privateKeySource:
+                directEntry:
+                  privateKey: ${readFile:/var/k8s/nodes-ssh}
 
 unclassified:
   location:

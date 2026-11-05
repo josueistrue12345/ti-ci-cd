@@ -1,6 +1,6 @@
 ---
 name: jenkinsfile-mobo
-description: Crea o adapta el Jenkinsfile (y los manifiestos k8s/ y Dockerfile que necesite) de un proyecto para el CI/CD de Mobo — Jenkins + SonarQube en Docker Compose, imágenes en Harbor y despliegue al cluster Kubernetes 192.168.30.x con un namespace por proyecto y NodePort. Úsalo siempre que el usuario quiera crear, generar, revisar o arreglar un Jenkinsfile o pipeline, meter un repo/proyecto nuevo al CI/CD, desplegar un proyecto a Kubernetes desde Jenkins, o pase un Jenkinsfile que falla, aunque no diga "skill" ni "Jenkinsfile" (p. ej. "mete este repo al pipeline", "que este proyecto se despliegue solo", "hazle el CI a esta API de Node").
+description: Crea o adapta el Jenkinsfile (y los manifiestos k8s/ y Dockerfile que necesite) de un proyecto para el CI/CD de Mobo — Jenkins + SonarQube en Docker Compose, con despliegue al cluster Kubernetes 192.168.30.x (un namespace por proyecto, NodePort) que se activa cuando haya registry de imágenes. Úsalo siempre que el usuario quiera crear, generar, revisar o arreglar un Jenkinsfile o pipeline, meter un repo/proyecto nuevo al CI/CD, desplegar un proyecto a Kubernetes desde Jenkins, o pase un Jenkinsfile que falla, aunque no diga "skill" ni "Jenkinsfile" (p. ej. "mete este repo al pipeline", "que este proyecto se despliegue solo", "hazle el CI a esta API de Node").
 ---
 
 # Jenkinsfile para el CI/CD de Mobo
@@ -16,21 +16,30 @@ convenciones de abajo: Jenkins, el cluster y los permisos ya están armados alre
 | Jenkins | Contenedor `jenkins` con el Docker del host (socket montado). No tiene agentes: todo corre ahí |
 | Herramientas en Jenkins | Solo `docker`, `kubectl` y `git`. Node, PHP, Java, etc. **no** están: cada paso corre en un contenedor con `docker run --volumes-from jenkins -w "$WORKSPACE"` |
 | SonarQube | Instalación `sonarqube` (`withSonarQubeEnv('sonarqube')`), Community Edition. Desde los contenedores del pipeline se llega con `--network container:jenkins` |
-| Credenciales | `registry-cred` (usuario/token de Harbor), `kubeconfig` (archivo), `sonar-token`, `git-cred` |
-| Harbor | `harbor.mobo.local`, proyecto `mobo` → imagen `harbor.mobo.local/mobo/<app>` (**TODO: confirmar host y proyecto reales**) |
+| Credenciales | `registry-cred` (usuario/token del registry, vacío por ahora), `kubeconfig` (archivo), `sonar-token`, `git-cred` |
+| Registry de imágenes | **No hay todavía.** No lo preguntes ni propongas uno: el usuario lo definirá con su equipo |
 | Cluster | API `https://192.168.30.10:6443` (VIP de 3 masters). Workers `192.168.30.11`, `.12`, `.13` |
 | Acceso de Jenkins al cluster | ServiceAccount `jenkins-deployer` (namespace `mobofacil`), con Role por namespace. Puede crear/actualizar deployments, services, configmaps, ingresses, jobs, HPA, PVC; leer pods/replicasets y **solo** el Secret `<app>-env` |
 | Jobs | Multibranch: un job por repo de `GIT_REPOS` en el `.env` de `ci-cd`, revisión cada minuto |
 
-Si el host de Harbor sigue marcado como TODO, pregúntalo una vez al usuario antes de escribir archivos.
+### Sin registry, qué hace el pipeline
+
+Los nodos del cluster descargan las imágenes de un registry; sin él no hay forma de que reciban la imagen,
+así que el despliegue no puede funcionar todavía. El template lo resuelve con la variable `REGISTRY`
+del Jenkinsfile, que se deja vacía (`REGISTRY = ''`):
+
+- Vacía: el pipeline corre pruebas, SonarQube y construye la imagen (valida el `Dockerfile`); las etapas de subir, desplegar y prueba de humo se saltan solas.
+- Con valor (p. ej. `ghcr.io/mobo` o `registry.mobo.mx/proyecto`): esas etapas se activan en la rama de despliegue sin tocar nada más.
+
+Genera las etapas de despliegue y los manifiestos `k8s/` igual, para que el proyecto quede listo cuando exista el registry.
 
 ## Convenciones (todo cuelga del nombre del proyecto)
 
 Sea `<app>` el nombre del repo en minúsculas con guiones (es también el nombre del job en Jenkins):
 
-- Namespace: `<app>` · Deployment y Service: `<app>` · Imagen: `<harbor>/<proyecto-harbor>/<app>:<build>-<commit>`
+- Namespace: `<app>` · Deployment y Service: `<app>` · Imagen: `<app>:<build>-<commit>` (en el registry: `$REGISTRY/<app>`)
 - Secret con las variables de entorno de la app: `<app>-env` (lo crea una persona en el cluster; el pipeline solo verifica que exista)
-- Secret para descargar de Harbor: `harbor-cred` en el namespace
+- Secret para descargar del registry: `registry-cred` en el namespace (solo cuando haya registry privado)
 - `sonar.projectKey` = `<app>` (si dos repos comparten key, SonarQube mezcla sus análisis)
 - Rama que despliega: `main` (o `master` si el repo usa esa). Las demás ramas prueban, analizan y construyen, pero no suben ni despliegan: si no, una rama de feature pisaría producción
 - NodePort: uno libre entre 30000 y 32767, fijo por proyecto. Prueba de humo contra `http://192.168.30.11:<nodePort>`
@@ -61,26 +70,30 @@ La excepción conocida es `mobofacil`, que ya existía con Deployment `mobofacil
 - Caches de dependencias en volúmenes con nombre del proyecto (`<app>-npm-cache`, `<app>-m2`, …) para que los builds no descarguen todo cada vez.
 - Como los contenedores corren como root, el `post { always }` del pipeline regresa el workspace al usuario
   de Jenkins (uid 1000) y borra la imagen local; si no, el siguiente checkout falla por permisos y el disco se llena.
-- Las etapas de Harbor y despliegue llevan `when { branch 'main' }`.
+- Las etapas de subir, desplegar y prueba de humo llevan la rama de despliegue **y** `REGISTRY` con valor en su `when`.
 - `kubectl` siempre dentro de `withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')])` y con `-n "$NAMESPACE"`.
 - Si el rollout falla, `rollout undo` en el `post { failure }` de la etapa de despliegue.
 
 ## Al entregar, dile al usuario qué falta fuera del repo
 
+Hoy:
 1. Agregar la URL del repo a `GIT_REPOS` en el `.env` de `ci-cd` y correr `docker compose up -d` (crea el job).
-2. En un master: `sudo bash dar-acceso.sh <app>` con `HARBOR_USER`/`HARBOR_PASS` (script en `ci-cd/k8s/`): crea el namespace, los permisos de Jenkins y `harbor-cred`.
-3. En un master: crear `<app>-env` con las variables de la app (`kubectl -n <app> create secret generic <app>-env --from-env-file=.env`).
-4. En Harbor: que exista el proyecto y que el usuario de `registry-cred` tenga permiso de push.
-5. Push a `main` y revisar el build en Jenkins.
+2. Push y revisar el build en Jenkins: pruebas, SonarQube e imagen.
+
+Cuando haya registry (menciónalo en una línea, sin insistir):
+3. Poner su dirección en `REGISTRY` del Jenkinsfile y `REGISTRY_USERNAME`/`REGISTRY_TOKEN` en el `.env` de `ci-cd`.
+4. En un master: `sudo bash dar-acceso.sh <app>` (script en `ci-cd/k8s/`): crea el namespace, los permisos de Jenkins y, si se le pasa `REGISTRY`, `REGISTRY_USER` y `REGISTRY_PASS`, el Secret `registry-cred`.
+5. En un master: crear `<app>-env` con las variables de la app (`kubectl -n <app> create secret generic <app>-env --from-env-file=.env`).
 
 ## Cuando un pipeline falla
 
 | Síntoma | Causa probable |
 |---|---|
+| Las etapas de despliegue salen como saltadas | `REGISTRY` vacío (esperado mientras no haya registry) o la rama no es la de despliegue |
 | `Forbidden` en `kubectl` | No se corrió `dar-acceso.sh <app>`, o el recurso no está en el Role (p. ej. un `Namespace` dentro de `k8s/`: quítalo, el namespace lo crea el script) |
-| Pods en `ImagePullBackOff` | Falta `harbor-cred` en el namespace, o los nodos no confían en el certificado de Harbor |
-| `x509` al hacer `docker login`/`push` | El host de Jenkins no confía en el certificado de Harbor: `/etc/docker/certs.d/<harbor>/ca.crt` |
-| `Falta el Secret <app>-env` | Paso 3 de arriba |
+| Pods en `ImagePullBackOff` | Falta `registry-cred` en el namespace, o los nodos no confían en el certificado del registry |
+| `x509` al hacer `docker login`/`push` | El host de Jenkins no confía en el certificado del registry: `/etc/docker/certs.d/<registry>/ca.crt` |
+| `Falta el Secret <app>-env` | Paso 5 de arriba |
 | `Permission denied` en el checkout | Falta el `chown` del `post { always }` |
 | El scanner no llega a SonarQube | Falta `--network container:jenkins` |
 | La prueba de humo da timeout | NodePort distinto al de `k8s/service.yaml`, o la app tarda en arrancar: subir el `sleep`/reintentos |
