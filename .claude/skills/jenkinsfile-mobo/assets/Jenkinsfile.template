@@ -1,6 +1,7 @@
-// Pipeline de __APP__: pruebas -> SonarQube -> imagen -> registry -> Kubernetes (namespace __APP__).
-// Corre en el Jenkins de ci-cd (docker-compose). Subir y desplegar solo pasan en la rama __DEPLOY_BRANCH__
-// y cuando REGISTRY tiene valor; mientras esté vacío, el pipeline prueba, analiza y construye la imagen.
+// Pipeline de __APP__: pruebas -> SonarQube -> imagen -> nodos/registry -> Kubernetes (namespace __APP__) -> prueba de humo.
+// Corre en el Jenkins de ci-cd. Solo la rama __DEPLOY_BRANCH__ publica la imagen y despliega; las demás prueban, analizan y construyen.
+// Sin registry (REGISTRY vacío): la imagen se copia a cada worker con "docker save | ssh <worker> ctr import" (credencial nodes-ssh).
+// Con registry: se sube ahí y los nodos la descargan.
 pipeline {
   agent any
 
@@ -8,15 +9,20 @@ pipeline {
     timestamps()
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '10'))
+    timeout(time: 45, unit: 'MINUTES')
   }
 
   environment {
-    APP = '__APP__'
-    NAMESPACE = '__APP__'
-    // Registry de imágenes (p. ej. 'ghcr.io/mobo'). Vacío: no se sube ni se despliega
-    REGISTRY = ''
+    APP           = '__APP__'
+    NAMESPACE     = '__APP__'
+    DEPLOY_BRANCH = '__DEPLOY_BRANCH__'
+    // Registry de imágenes (p. ej. 'ghcr.io/mobo'). Vacío: la imagen se copia por SSH a los workers
+    REGISTRY      = ''
+    // Workers donde puede caer el pod: sin registry, todos necesitan la imagen
+    NODES         = '192.168.30.11 192.168.30.12 192.168.30.13'
     // NodePort de k8s/service.yaml en cualquier worker
-    APP_URL = 'http://192.168.30.11:__NODE_PORT__'
+    APP_URL       = 'http://192.168.30.11:__NODE_PORT__'
+    HEALTH_PATH   = '__HEALTH_PATH__'
   }
 
   stages {
@@ -25,6 +31,7 @@ pipeline {
         script {
           // Tag único por build: así Kubernetes sabe que la imagen cambió
           env.TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+          env.DEPLOY = (env.BRANCH_NAME == env.DEPLOY_BRANCH) ? 'true' : 'false'
         }
       }
     }
@@ -50,8 +57,9 @@ pipeline {
             docker run --rm --volumes-from jenkins --network container:jenkins -w "$WORKSPACE" -u 0 \
               -e SONAR_HOST_URL="$SONAR_HOST_URL" -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
               -e SCANNER_WORKDIR_PATH="$WORKSPACE/.scannerwork" \
-              sonarsource/sonar-scanner-cli \
-              -Dsonar.projectKey="$APP" -Dsonar.projectName="$APP" \
+              -v "$APP-sonar-cache":/opt/sonar-scanner/.sonar/cache \
+              sonarsource/sonar-scanner-cli:11 \
+              -Dsonar.projectKey="$APP" -Dsonar.projectName="$APP" -Dsonar.projectVersion="$TAG" \
               -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300 \
               __SONAR_PARAMS__
           '''
@@ -61,14 +69,40 @@ pipeline {
 
     stage('Construir imagen') {
       steps {
-        sh 'docker build -t "$APP:$TAG" .'
+        sh 'docker build --pull -t "$APP:$TAG" .'
+      }
+    }
+
+    stage('Copiar imagen a los nodos') {
+      when {
+        allOf {
+          environment name: 'DEPLOY', value: 'true'
+          expression { return !env.REGISTRY }
+        }
+      }
+      steps {
+        withCredentials([sshUserPrivateKey(credentialsId: 'nodes-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          sh '''
+            mkdir -p "$HOME/.ssh"
+            SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+            docker save "$APP:$TAG" | gzip -1 > image.tar.gz
+            for node in $NODES; do
+              echo "> $APP:$TAG -> $node"
+              $SSH "$SSH_USER@$node" 'gunzip | sudo ctr -n k8s.io images import -' < image.tar.gz
+              # Kubernetes la busca como docker.io/library/<app>:<tag>
+              $SSH "$SSH_USER@$node" 'sudo ctr -n k8s.io images ls -q' | grep -q "library/$APP:$TAG" || {
+                echo "El nodo $node no tiene $APP:$TAG después del import"; exit 1; }
+            done
+            rm -f image.tar.gz
+          '''
+        }
       }
     }
 
     stage('Subir al registry') {
       when {
         allOf {
-          branch '__DEPLOY_BRANCH__'
+          environment name: 'DEPLOY', value: 'true'
           expression { return env.REGISTRY ? true : false }
         }
       }
@@ -85,60 +119,55 @@ pipeline {
     }
 
     stage('Desplegar') {
-      when {
-        allOf {
-          branch '__DEPLOY_BRANCH__'
-          expression { return env.REGISTRY ? true : false }
-        }
-      }
+      when { environment name: 'DEPLOY', value: 'true' }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
           sh '''
-            kubectl -n "$NAMESPACE" get secret "$APP-env" > /dev/null 2>&1 || {
-              echo "Falta el Secret $APP-env en el namespace $NAMESPACE"; exit 1; }
+            # dar-acceso.sh solo deja a Jenkins leer el Secret <namespace>-env
+            kubectl -n "$NAMESPACE" get secret "$NAMESPACE-env" > /dev/null 2>&1 || {
+              echo "Falta el Secret $NAMESPACE-env en el namespace $NAMESPACE (o no se corrió dar-acceso.sh $NAMESPACE)"; exit 1; }
 
-            # Overlay temporal: los manifiestos de k8s/ con la imagen del registry y el tag de este build
-            mkdir -p .deploy
-            cat > .deploy/kustomization.yaml <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: $NAMESPACE
-resources:
-  - ../k8s
-images:
-  - name: $APP
-    newName: $REGISTRY/$APP
-    newTag: "$TAG"
-EOF
+            # Overlay temporal: los manifiestos de k8s/ en el namespace del proyecto con el tag de este build.
+            # namespace: es obligatorio; sin él kubectl aplica en el namespace del kubeconfig (mobofacil).
+            rm -rf .deploy && mkdir -p .deploy
+            {
+              printf 'apiVersion: kustomize.config.k8s.io/v1beta1\\nkind: Kustomization\\n'
+              printf 'namespace: %s\\nresources:\\n  - ../k8s\\nimages:\\n  - name: %s\\n' "$NAMESPACE" "$APP"
+              [ -z "$REGISTRY" ] || printf '    newName: %s/%s\\n' "$REGISTRY" "$APP"
+              printf '    newTag: "%s"\\n' "$TAG"
+            } > .deploy/kustomization.yaml
+
             kubectl apply -k .deploy
-            kubectl -n "$NAMESPACE" rollout status deployment/"$APP" --timeout=180s
+            kubectl -n "$NAMESPACE" rollout status deployment/"$APP" --timeout=300s
           '''
         }
       }
       post {
         failure {
-          // Si la versión nueva no levanta, se regresa a la anterior
+          // Muestra el estado y regresa a la versión anterior (en el primer despliegue no hay a cuál: es normal que falle)
           withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-            sh 'kubectl -n "$NAMESPACE" rollout undo deployment/"$APP" || true'
+            sh '''
+              kubectl -n "$NAMESPACE" get pods -o wide || true
+              kubectl -n "$NAMESPACE" rollout undo deployment/"$APP" || true
+            '''
           }
         }
       }
     }
 
     stage('Prueba de humo') {
-      when {
-        allOf {
-          branch '__DEPLOY_BRANCH__'
-          expression { return env.REGISTRY ? true : false }
-        }
-      }
+      when { environment name: 'DEPLOY', value: 'true' }
       steps {
-        // Reintenta unos segundos: el Service tarda un poco en mandar tráfico a los pods nuevos
+        // Reintenta: el Service tarda un poco en mandar tráfico a los pods nuevos.
+        // Imprime el código HTTP: un 500 significa que la app SÍ responde pero truena (ver kubectl logs).
         sh '''
-          for i in 1 2 3 4 5 6; do
-            curl -fsS -o /dev/null -w "GET __HEALTH_PATH__ -> %{http_code}\\n" "$APP_URL__HEALTH_PATH__" && exit 0
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL$HEALTH_PATH" || true)
+            echo "Intento $i: GET $HEALTH_PATH -> $code"
+            case "$code" in 2*|3*) exit 0 ;; esac
             sleep 5
           done
+          echo "La prueba de humo falló en $APP_URL$HEALTH_PATH (último código: $code)"
           exit 1
         '''
       }
@@ -148,17 +177,18 @@ EOF
   post {
     success {
       script {
-        if (env.BRANCH_NAME == '__DEPLOY_BRANCH__' && env.REGISTRY) {
-          echo "Desplegado $REGISTRY/$APP:$TAG en $APP_URL"
+        if (env.DEPLOY == 'true') {
+          echo "Desplegado ${env.APP}:${env.TAG} en ${env.APP_URL}"
         }
       }
     }
     always {
       // Los pasos corren como root: se regresa el workspace al usuario jenkins y se limpian las imágenes locales
       sh '''
-        docker run --rm --volumes-from jenkins -u 0 alpine chown -R 1000:1000 "$WORKSPACE" || true
-        docker rmi "$APP:$TAG" || true
-        [ -z "$REGISTRY" ] || docker rmi "$REGISTRY/$APP:$TAG" || true
+        docker run --rm --volumes-from jenkins -u 0 alpine:3.20 chown -R 1000:1000 "$WORKSPACE" || true
+        rm -f image.tar.gz
+        docker rmi "$APP:$TAG" > /dev/null 2>&1 || true
+        [ -z "$REGISTRY" ] || docker rmi "$REGISTRY/$APP:$TAG" > /dev/null 2>&1 || true
       '''
     }
   }

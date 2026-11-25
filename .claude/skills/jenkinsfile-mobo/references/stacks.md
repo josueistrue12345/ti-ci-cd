@@ -25,7 +25,14 @@ docker run --rm --volumes-from jenkins -w "$WORKSPACE" -u 0 \
 - JUnit: `reports/junit.xml`
 - Sonar: `-Dsonar.sources=app -Dsonar.tests=tests -Dsonar.exclusions=vendor/**,storage/**,bootstrap/cache/**`
 - Puerto: el del servidor web de la imagen (80 con nginx/apache; 8000 si usa `php artisan serve`, que no es para producción)
-- Dockerfile: etapa `composer:2` para `composer install --no-dev --optimize-autoloader`, y etapa final `php:8.x-fpm` + nginx, o `php:8.x-apache` con `DocumentRoot` en `public/`. Deja la caché de config para el arranque (`php artisan config:cache` necesita las variables de `<app>-env`).
+- Dockerfile: etapa `composer:2` para `composer install --no-dev --optimize-autoloader`, y etapa final `php:8.x-fpm` + nginx, o `php:8.x-apache` con `DocumentRoot` en `public/`. Deja la caché de config para el arranque (`php artisan config:cache` necesita las variables de `<app>-env`). El Dockerfile de `mobofacil` es una buena referencia.
+- En el Dockerfile crea `storage/framework/{cache/data,sessions,views}`, `storage/logs` y `bootstrap/cache` con dueño `www-data`, y en `.dockerignore` excluye `.env*`, `vendor`, `storage/*/*` y `bootstrap/cache/*.php`. Si montas un PVC, móntalo en `storage/app` (no en todo `storage/`, que lo dejaría vacío y sin permisos) y pon `fsGroup: 33`.
+- `LOG_CHANNEL=stderr` como `env` del contenedor: así el error de Laravel sale en `kubectl logs` en lugar de quedarse en `storage/logs` dentro del pod.
+- El `.env` de Laravel puede ir de dos formas; el Secret tiene que coincidir con la que use el Deployment:
+  - `envFrom` (la de la plantilla): `--from-env-file=app.env`, una llave por variable.
+  - Archivo montado con `subPath: .env` (lo que hace `mobofacil`): `--from-file=.env=app.env`, **una sola llave `.env`**. Si la llave no existe, Kubernetes monta una carpeta vacía y Laravel truena con `MissingAppKeyException`.
+- Revisa el aviso `does not comply with psr-4` del `composer dump-autoload` en el build: en Linux las mayúsculas importan (p. ej. carpeta `API/` con namespace `Api`) y esa clase no carga en el contenedor aunque en Windows funcione.
+- Migraciones en un `Job` o etapa aparte, nunca al arrancar el contenedor (con varias réplicas corren a la vez). Colas en otro Deployment, scheduler (`schedule:work`) en otro Deployment con `replicas: 1` o en un CronJob.
 
 ## Node.js
 

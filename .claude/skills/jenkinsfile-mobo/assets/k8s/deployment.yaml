@@ -1,4 +1,4 @@
-# La imagen se llama __APP__ a secas: el pipeline la cambia por la del registry con el tag del build.
+# La imagen se llama __APP__ a secas: el pipeline le pone el tag del build (y el registry, si hay).
 # El namespace lo pone el pipeline; no lo escribas aquí.
 apiVersion: apps/v1
 kind: Deployment
@@ -8,6 +8,7 @@ metadata:
     app: __APP__
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: __APP__
@@ -16,15 +17,19 @@ spec:
       labels:
         app: __APP__
     spec:
-      # Para registry privado; si el Secret no existe, Kubernetes descarga sin credenciales
+      # Solo para registry privado; si el Secret no existe, Kubernetes lo ignora
       imagePullSecrets:
         - name: registry-cred
       containers:
         - name: __APP__
           image: __APP__
+          # Sin registry la imagen ya está en el nodo (Jenkins la importa con ctr); con registry se descarga
+          # si falta. Funciona en ambos casos porque el tag cambia en cada build.
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: __CONTAINER_PORT__
-          # Variables de la app (BD, llaves, etc.): Secret creado a mano en el cluster
+          # Variables de la app: Secret creado a mano con UNA LLAVE POR VARIABLE
+          #   kubectl -n __APP__ create secret generic __APP__-env --from-env-file=app.env
           envFrom:
             - secretRef:
                 name: __APP__-env
